@@ -7,3 +7,16 @@ edition = "2024"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
+subscription-logic = { path = "../logic" }
+crown-derive = { version = "0.1.0", path = "../../../Crown-Factory/derive" }
+crown-salt = { version = "0.1.0", path = "../../../Crown-Factory/salt" }
+candid = "0.10"
+ic-cdk = "0.20"
+ic-cdk-management-canister = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
+bs58 = "0.5"
+
+[dev-dependencies]
+pocket-ic = "10"
