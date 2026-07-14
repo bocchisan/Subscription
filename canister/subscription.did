@@ -1,0 +1,6 @@
+// Update surface is frozen by docs/standards.md: only
+// {get_resolver, request_release, request_cancel} may ever appear
+// as non-query methods; the CI lint fails on anything else.
+// Methods appear here as build-plan stages implement them.
+
+service : {}

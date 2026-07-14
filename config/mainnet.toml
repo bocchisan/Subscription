@@ -1,0 +1,8 @@
+# Подписка — mainnet profile.
+#
+# Те же ключи, что в testnet.toml (docs/game-spec.md §9).
+#
+# Заполняется на G5: solana-mainnet из mainnet-профилей ядра и фабрики
+# (форма stream деплоится на F6). До готовности платформы здесь только ключи.
+
+threshold_key = "key_1"

@@ -1,0 +1,9 @@
+{
+  "canisters": {
+    "subscription": {
+      "type": "rust",
+      "package": "subscription",
+      "candid": "canister/subscription.did"
+    }
+  }
+}

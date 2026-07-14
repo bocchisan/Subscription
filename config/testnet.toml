@@ -1,0 +1,17 @@
+# Подписка — testnet profile.
+#
+# Ключи ровно по docs/game-spec.md §9:
+#   threshold_key — имя threshold-ключа среды
+#   per-chain: id, factory, domain
+#
+# factory / domain копируются из crown-factory/deploy/testnet.toml (форма
+# stream); этот репозиторий их не порождает. Локальная реплика dfx и
+# PocketIC дают то же имя ключа, что прод: key_1. Init-оверрайдов у этой
+# канистры нет — она не зовёт никого, кроме management canister.
+
+threshold_key = "key_1"
+
+[[chain]]
+id      = "solana-devnet"
+factory = "2pezd2u8LFMFULRzV2ygdRmH6BNxxU4AoeD8RSGgCdxv"
+domain  = "crown:stream:solana-devnet"
