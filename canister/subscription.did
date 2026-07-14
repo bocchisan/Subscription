@@ -1,7 +1,6 @@
 // Update surface is frozen by docs/standards.md: only
 // {get_resolver, request_release, request_cancel} may ever appear
 // as non-query methods; the CI lint fails on anything else.
-// request_cancel arrives at G3.
 
 type ReleaseArg = record {
   chain : text;
@@ -21,11 +20,30 @@ type SignedRelease = record {
   index : nat16;
   signature : blob;
 };
+type CancelArg = record {
+  chain : text;
+  subscription_id : blob;
+  donor : blob;
+  recipients : vec blob;
+  shares : vec nat16;
+  chunk : nat64;
+  n_chunks : nat16;
+  t0 : int64;
+  period : int64;
+  nonce : nat64;
+  signature : blob;
+};
+type SignedCancel = record {
+  escrow : blob;
+  signature : blob;
+};
 type ResolverResult = variant { Ok : blob; Err : text };
 type ReleaseResult = variant { Ok : SignedRelease; Err : text };
+type CancelResult = variant { Ok : SignedCancel; Err : text };
 
 service : {
   get_resolver : (text, blob) -> (ResolverResult);
   request_release : (ReleaseArg) -> (ReleaseResult);
+  request_cancel : (CancelArg) -> (CancelResult);
   get_logic_version : () -> (nat32) query;
 }

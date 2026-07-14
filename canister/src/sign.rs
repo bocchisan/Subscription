@@ -11,6 +11,9 @@ use ic_cdk_management_canister::{
 /// The byte after the escrow address that marks a release; pinned to the
 /// deployed shape's message framing (docs/game-spec.md §10).
 pub const RELEASE_TAG: u8 = 0x00;
+/// The byte after the escrow address that marks a cancel — same framing, so
+/// the two verdict kinds can never drift apart.
+pub const CANCEL_TAG: u8 = 0x01;
 
 fn schnorr_key_id() -> SchnorrKeyId {
     SchnorrKeyId {
@@ -44,6 +47,17 @@ pub fn release_message(domain: &str, program: &[u8], escrow: &[u8], index: u16) 
     message.extend_from_slice(escrow);
     message.push(RELEASE_TAG);
     message.extend_from_slice(&index.to_le_bytes());
+    message
+}
+
+/// DOMAIN ‖ program ‖ escrow ‖ [CANCEL_TAG] — the ed25519_program message the
+/// escrow demands right before `cancel` (game-spec §10).
+pub fn cancel_message(domain: &str, program: &[u8], escrow: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(domain.len().saturating_add(65));
+    message.extend_from_slice(domain.as_bytes());
+    message.extend_from_slice(program);
+    message.extend_from_slice(escrow);
+    message.push(CANCEL_TAG);
     message
 }
 
@@ -103,5 +117,19 @@ mod tests {
         expected.extend_from_slice(&[0x02, 0x01]);
         assert_eq!(message, expected);
         assert_eq!(RELEASE_TAG, 0x00);
+    }
+
+    // The cancel message shares the framing, with the cancel tag and no
+    // parameters: DOMAIN ‖ program_id ‖ escrow ‖ [0x01].
+    #[test]
+    fn cancel_message_layout_is_pinned() {
+        let message = cancel_message("crown:stream:solana-devnet", &[7; 32], &[9; 32]);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"crown:stream:solana-devnet");
+        expected.extend_from_slice(&[7; 32]);
+        expected.extend_from_slice(&[9; 32]);
+        expected.push(0x01);
+        assert_eq!(message, expected);
+        assert_eq!(CANCEL_TAG, 0x01);
     }
 }

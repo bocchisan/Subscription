@@ -16,4 +16,4 @@ fi
     exit 1
 }
 
-cargo test -p subscription --test g2 -- --include-ignored
+cargo test -p subscription --test g2 --test g3 -- --include-ignored
