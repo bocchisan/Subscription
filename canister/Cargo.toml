@@ -20,3 +20,4 @@ bs58 = "0.5"
 
 [dev-dependencies]
 pocket-ic = "10"
+hex = "0.4"
