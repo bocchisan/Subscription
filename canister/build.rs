@@ -42,10 +42,13 @@ fn main() {
         let context = format!("config/{profile}.toml");
         let get = |key: &str| value_of(block, key, &context);
         chains.push_str(&format!(
-            "    ChainSpec {{ id: {id:?}, factory: {factory:?}, domain: {domain:?} }},\n",
+            "    ChainSpec {{ id: {id:?}, factory: {factory:?}, domain: {domain:?}, \
+             fee_bps: {fee_bps}, fee_wallet: {fee_wallet:?} }},\n",
             id = get("id"),
             factory = get("factory"),
             domain = get("domain"),
+            fee_bps = get("fee_bps"),
+            fee_wallet = get("fee_wallet"),
         ));
     }
 

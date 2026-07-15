@@ -4,7 +4,7 @@
 //! subscription shape is one recipient with the whole row (share 10000).
 //!
 //! Usage:
-//!   e2e-solana create  <rpc> <donor.json> <recipient_b58> <chunk> <n_chunks> <t0> <period> <resolver_hex32> <nonce>
+//!   e2e-solana create  <rpc> <donor.json> <recipient_b58> <chunk> <n_chunks> <t0> <period> <resolver_hex32> <fee_bps> <fee_wallet_b58> <nonce>
 //!   e2e-solana release <rpc> <payer.json> <escrow_b58> <index> <sig_hex> <resolver_hex32>
 //!   e2e-solana cancel  <rpc> <payer.json> <escrow_b58> <sig_hex> <resolver_hex32>
 //!   e2e-solana refund  <rpc> <payer.json> <escrow_b58>
@@ -96,11 +96,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("create") => {
-            let [rpc, keypair, recipient, chunk, n_chunks, t0, period, resolver, nonce] =
+            let [rpc, keypair, recipient, chunk, n_chunks, t0, period, resolver, fee_bps, fee_wallet, nonce] =
                 &args[2..]
             else {
                 panic!(
-                    "create <rpc> <donor.json> <recipient_b58> <chunk> <n_chunks> <t0> <period> <resolver_hex32> <nonce>"
+                    "create <rpc> <donor.json> <recipient_b58> <chunk> <n_chunks> <t0> <period> \
+                     <resolver_hex32> <fee_bps> <fee_wallet_b58> <nonce>"
                 );
             };
             let rpc = client(rpc);
@@ -111,6 +112,8 @@ fn main() {
             let t0: i64 = t0.parse().expect("t0");
             let period: i64 = period.parse().expect("period");
             let nonce: u64 = nonce.parse().expect("nonce");
+            let fee_bps: u16 = fee_bps.parse().expect("fee_bps");
+            let fee_wallet = Pubkey::from_str(fee_wallet).expect("fee wallet");
             let resolver =
                 Pubkey::new_from_array(hex::decode(resolver).unwrap().try_into().unwrap());
             let recipients = vec![recipient];
@@ -124,6 +127,8 @@ fn main() {
                 t0,
                 period,
                 &resolver,
+                fee_bps,
+                &fee_wallet,
                 nonce,
             );
             let (escrow, _) = Pubkey::find_program_address(&[b"escrow", &salt], &factory::ID);
@@ -151,6 +156,8 @@ fn main() {
                         t0,
                         period,
                         resolver,
+                        fee_bps,
+                        fee_wallet,
                         nonce,
                     }
                     .data(),
@@ -181,7 +188,7 @@ fn main() {
                 escrow_usdc: ata(&escrow),
                 donor: state.donor,
                 donor_usdc: ata(&state.donor),
-                splitter_aux_usdc: ata(&splitter::TREASURY),
+                fee_usdc: Some(ata(&state.fee_wallet)),
                 splitter_event_authority: Pubkey::find_program_address(
                     &[b"__event_authority"],
                     &factory::SPLITTER,
@@ -199,6 +206,7 @@ fn main() {
                 &payer,
                 &[
                     create_ata_ix(&payer.pubkey(), &recipient),
+                    create_ata_ix(&payer.pubkey(), &state.fee_wallet),
                     verdict_ix(&resolver, &signature, &message),
                     Instruction {
                         program_id: factory::ID,

@@ -7,7 +7,8 @@
 # рождается с t0 в прошлом, чтобы RELEASE_MARGIN (900 с, константа деплоя
 # формы) был уже исчерпан — ноль ожидания. Акты:
 #   1. эскроу S (3 куска × 45 с): кусок 0 выпускается сразу по подписи
-#      канистры → сплиттер → владельцу 97%; кусок 1 до срока — отказ
+#      канистры → комиссия кошельку игры, остаток через сплиттер владельцу;
+#      кусок 1 до срока — отказ
 #      канистры (негатив);
 #   2. после созревания кусков 1 и 2: подпись куска 2 валидна, но release(2)
 #      ревертится формой — порядок держит ончейн (негатив); подпись чужой
@@ -36,6 +37,9 @@ PERIOD=45
 N_CHUNKS=3
 CHUNK=40000
 R_CHUNK=1000
+FEE_BPS=$(grep "^fee_bps" config/testnet.toml | cut -d"=" -f2 | tr -d " ")
+FEE_WALLET=$(grep "^fee_wallet" config/testnet.toml | cut -d'"' -f2)
+CHUNK_PAYOUT=$((CHUNK - CHUNK * FEE_BPS / 10000))
 NONCE=$(date +%s)
 
 # ---- tooling ------------------------------------------------------------
@@ -173,7 +177,7 @@ echo "subscription B resolver=$RES_B"
 
 echo "== act 1: the subscription escrow, chunk 0 due at once"
 T0=$(date +%s)
-ESCROW=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" "$CHUNK" "$N_CHUNKS" "$T0" "$PERIOD" "$RES_A" "$NONCE")
+ESCROW=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" "$CHUNK" "$N_CHUNKS" "$T0" "$PERIOD" "$RES_A" "$FEE_BPS" "$FEE_WALLET" "$NONCE")
 ESCROW_HEX=$(b58_hex "$ESCROW")
 echo "escrow=$ESCROW"
 
@@ -190,7 +194,7 @@ ESCROW_FROM_CANISTER=$(echo "$JSON" | result_field escrow)
 OWNER_BEFORE=$(driver balance "$SOL_RPC_URL" "$OWNER")
 driver release "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$ESCROW" 0 "$SIG0" "$RES_A"
 OWNER_AFTER=$(driver balance "$SOL_RPC_URL" "$OWNER")
-[ "$OWNER_AFTER" = "$((OWNER_BEFORE + CHUNK * 97 / 100))" ] || { echo "FAIL: owner payout"; exit 1; }
+[ "$OWNER_AFTER" = "$((OWNER_BEFORE + CHUNK_PAYOUT))" ] || { echo "FAIL: owner payout"; exit 1; }
 
 echo "== wait until chunks 1 and 2 mature"
 NOW=$(date +%s); DUE2=$((T0 + 2 * PERIOD + 5))
@@ -230,7 +234,7 @@ read -r RELEASED SETTLED <<<"$(driver state "$SOL_RPC_URL" "$ESCROW")"
 
 echo "== act 4: an overdue stream outside the game — refund(), no Settled"
 R_T0=$(( $(date +%s) - 2000 ))
-R_ESCROW=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" "$R_CHUNK" 1 "$R_T0" "$PERIOD" "$RES_A" $((NONCE + 1)))
+R_ESCROW=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" "$R_CHUNK" 1 "$R_T0" "$PERIOD" "$RES_A" "$FEE_BPS" "$FEE_WALLET" $((NONCE + 1)))
 echo "refund escrow=$R_ESCROW"
 DONOR_BEFORE=$(driver balance "$SOL_RPC_URL" "$DONOR")
 driver refund "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$R_ESCROW"
@@ -238,7 +242,7 @@ DONOR_AFTER=$(driver balance "$SOL_RPC_URL" "$DONOR")
 [ "$DONOR_AFTER" = "$((DONOR_BEFORE + R_CHUNK))" ] || { echo "FAIL: refund"; exit 1; }
 
 echo "== the book credits the donor for the released chunks, and only them"
-EXPECTED=$((2 * CHUNK))
+EXPECTED=$((2 * CHUNK_PAYOUT))
 REP=""
 for _ in $(seq 1 90); do
     REP=$(reputation "$(blob_hex "$DONOR_HEX")" "$(blob_hex "$OWNER_HEX")")

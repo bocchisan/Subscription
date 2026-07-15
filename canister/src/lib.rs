@@ -27,6 +27,11 @@ pub struct ChainSpec {
     pub factory: &'static str,
     /// Cluster-scoped domain, the head of every signed message.
     pub domain: &'static str,
+    /// The game's price tag: birth fields of every escrow it resolves. An
+    /// escrow born with a different fee derives a different salt and never
+    /// gets a signature from this canister.
+    pub fee_bps: u16,
+    pub fee_wallet: &'static str,
 }
 
 include!(concat!(env!("OUT_DIR"), "/profile.rs"));

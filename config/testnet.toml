@@ -13,5 +13,10 @@ threshold_key = "key_1"
 
 [[chain]]
 id      = "solana-devnet"
-factory = "2pezd2u8LFMFULRzV2ygdRmH6BNxxU4AoeD8RSGgCdxv"
+factory = "57MpCQ3TfAE66qDAnfkP9AX7LRqwd4CNX8uN6DaVwm3V"
 domain  = "crown:stream:solana-devnet"
+# Прейскурант игры (factory-spec §2.1): поля рождения каждого её эскроу,
+# часть соли. Комиссию снимает сам эскроу с каждого выпуска; отмена и
+# возврат бесплатны.
+fee_bps    = 300
+fee_wallet = "3it64t7KXNip1C1BRYNh8ygeKyujWnaQrPSj3hV9TWbE"

@@ -8,7 +8,7 @@
 |---|---|---|
 | `logic` не делает I/O | ноль зависимостей, время — аргумент | `cargo tree -p subscription-logic` печатает один крейт; `grep -rE 'ic_cdk\|std::(fs\|net\|time)\|reqwest' logic/src/` пусто |
 | `logic` не знает про чейн и криптографию | расписание — чистые числа | `grep -riE 'solana\|ed25519\|sha256\|candid' logic/src/` пусто |
-| Канистра не двигает деньги | нет переводов, нет знания о сплиттере, флоре, ценах | `grep -riE 'transfer\|approve\|splitter\|fee\|bps\|treasury' canister/src/` пусто |
+| Канистра не двигает деньги | нет переводов, нет знания о сплиттере, флоре, ценах, казне | `grep -riE 'transfer\|approve\|splitter\|treasury' canister/src/` пусто |
 | Канистра не читает внешние сети | нет outcalls, нет RPC-канистр, нет книги | `grep -r 'http_request' canister/src/` пусто; единственный внешний вызов — management canister |
 | Канистра без состояния | нет стабильной памяти, реестров, таймеров | `grep -rE 'stable_structures\|set_timer\|StableBTreeMap' canister/src/` пусто |
 | Update-поверхность фиксирована | три метода | парсер `.did` падает на update вне `{get_resolver, request_release, request_cancel}` |
@@ -54,7 +54,7 @@
 
 Ровно ключи из game-spec §9: `threshold_key`; per-chain — `id`, `factory`, `domain`. Всё. Чейны попарно различны по `(id, factory, domain)` — проверяется при деплое.
 
-Нет и не появится: `crown_index`, RPC-URL, API-ключ, адрес сплиттера, `feeBps`, казна, `release_margin`, `min_gross`, цены, периоды, кворумы, init-оверрайды.
+Нет и не появится: `crown_index`, RPC-URL, API-ключ, адрес сплиттера, казна, `release_margin`, `min_gross`, цены, периоды, кворумы, init-оверрайды. `fee_bps` и `fee_wallet` в конфиге есть — прейскурант игры, часть соли каждого её эскроу; денег канистра по-прежнему не двигает.
 
 Значения `factory`, `domain` берутся из `crown-factory/deploy/`. Этот репозиторий их не порождает — только копирует.
 

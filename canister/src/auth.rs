@@ -109,6 +109,14 @@ pub fn derive_escrow(
                 .map_err(|_| AuthError::BadFieldLength)?,
         );
     }
+    // The game's fee is part of the salt and comes from the config, never
+    // from the requester: an escrow born with a price other than this
+    // game's derives a different address and never gets a signature.
+    let fee_wallet: [u8; 32] = bs58::decode(spec.fee_wallet)
+        .into_vec()
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or(AuthError::MalformedConfig)?;
     // The shape owns its byte format: `crown-salt` is the single offchain
     // definition of the salt, parity-tested against the deployed program's
     // `birth_salt`.
@@ -121,6 +129,8 @@ pub fn derive_escrow(
         t0,
         period,
         &resolver,
+        spec.fee_bps,
+        &fee_wallet,
         nonce,
     );
 
@@ -148,6 +158,14 @@ pub fn validate_config() -> Result<(), AuthError> {
             .ok()
             .filter(|b| b.len() == 32)
             .ok_or(AuthError::MalformedConfig)?;
+        bs58::decode(spec.fee_wallet)
+            .into_vec()
+            .ok()
+            .filter(|b| b.len() == 32)
+            .ok_or(AuthError::MalformedConfig)?;
+        if spec.fee_bps >= 10_000 {
+            return Err(AuthError::MalformedConfig);
+        }
         if spec.domain.is_empty() {
             return Err(AuthError::MalformedConfig);
         }
@@ -174,8 +192,11 @@ mod tests {
     fn spec() -> ChainSpec {
         ChainSpec {
             id: "solana-devnet",
-            factory: "2pezd2u8LFMFULRzV2ygdRmH6BNxxU4AoeD8RSGgCdxv",
+            factory: "57MpCQ3TfAE66qDAnfkP9AX7LRqwd4CNX8uN6DaVwm3V",
             domain: "crown:stream:solana-devnet",
+            fee_bps: 500,
+            // base58 of [0x44; 32].
+            fee_wallet: "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         }
     }
 
@@ -212,6 +233,8 @@ mod tests {
             1_900_000_000,
             2_592_000,
             &resolver,
+            500,
+            &[0x44; 32],
             7,
         );
         let program: [u8; 32] = bs58::decode(spec().factory)

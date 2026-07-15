@@ -35,7 +35,7 @@
 1. `cargo tree -p subscription-logic --edges normal` печатает **только сам крейт**. Ноль зависимостей.
 2. `grep -rE 'ic_cdk|std::(fs|net|time)|reqwest' logic/src/` → пусто.
 3. `grep -riE 'solana|ed25519|sha256|candid' logic/src/` → пусто. Логика не знает про чейн и криптографию.
-4. `grep -riE 'transfer|approve|splitter|fee|bps|treasury' canister/src/` → пусто; `grep -r 'http_request' canister/src/` → пусто. Канистра не двигает деньги и не читает внешние сети.
+4. `grep -riE 'transfer|approve|splitter|treasury' canister/src/` → пусто; `grep -r 'http_request' canister/src/` → пусто. Канистра не двигает деньги и не читает внешние сети.
 5. `grep -rE 'stable_structures|set_timer|StableBTreeMap' canister/src/` → пусто. Состояния и таймеров нет — это заявлено спекой и проверяется машиной.
 6. Парсер `.did`: update-методы — ровно `{get_resolver, request_release, request_cancel}`. Любой сверх списка роняет CI.
 

@@ -10,7 +10,10 @@ use serde_bytes::ByteBuf;
 
 pub const CHAIN: &str = "solana-devnet";
 /// Mirror of config/testnet.toml — the profile the test wasm is baked with.
-pub const FACTORY: &str = "2pezd2u8LFMFULRzV2ygdRmH6BNxxU4AoeD8RSGgCdxv";
+/// The game's price tag from config/testnet.toml — part of every salt.
+pub const FEE_BPS: u16 = 300;
+pub const FEE_WALLET: &str = "3it64t7KXNip1C1BRYNh8ygeKyujWnaQrPSj3hV9TWbE";
+pub const FACTORY: &str = "57MpCQ3TfAE66qDAnfkP9AX7LRqwd4CNX8uN6DaVwm3V";
 pub const DOMAIN: &str = "crown:stream:solana-devnet";
 
 pub fn game_wasm() -> Vec<u8> {

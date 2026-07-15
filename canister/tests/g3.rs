@@ -54,6 +54,14 @@ fn request_cancel(
 
 /// The escrow the donor is cancelling, derived offchain exactly as the
 /// canister derives it.
+fn fee_wallet() -> [u8; 32] {
+    bs58::decode(common::FEE_WALLET)
+        .into_vec()
+        .expect("bs58")
+        .try_into()
+        .expect("32 bytes")
+}
+
 fn escrow_of(resolver: &[u8], donor: &[u8; 32], nonce: u64) -> Vec<u8> {
     let resolver: [u8; 32] = resolver.try_into().expect("32 bytes");
     let salt = crown_salt::stream::salt(
@@ -65,6 +73,8 @@ fn escrow_of(resolver: &[u8], donor: &[u8; 32], nonce: u64) -> Vec<u8> {
         T0,
         PERIOD,
         &resolver,
+        common::FEE_BPS,
+        &fee_wallet(),
         nonce,
     );
     let program: [u8; 32] = bs58::decode(common::FACTORY)

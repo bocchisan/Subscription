@@ -50,6 +50,15 @@ fn request_release(
     result
 }
 
+/// The fee wallet from the baked config, as raw bytes for the salt.
+fn fee_wallet() -> [u8; 32] {
+    bs58::decode(common::FEE_WALLET)
+        .into_vec()
+        .expect("bs58")
+        .try_into()
+        .expect("32 bytes")
+}
+
 /// The escrow address the canister must derive: crown-salt over the birth
 /// fields (resolver included), then the PDA arithmetic.
 fn expected_escrow(resolver: &[u8], t0: i64) -> Vec<u8> {
@@ -63,6 +72,8 @@ fn expected_escrow(resolver: &[u8], t0: i64) -> Vec<u8> {
         t0,
         PERIOD,
         &resolver,
+        common::FEE_BPS,
+        &fee_wallet(),
         NONCE,
     );
     let program: [u8; 32] = bs58::decode(common::FACTORY)
