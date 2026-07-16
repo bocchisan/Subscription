@@ -12,10 +12,10 @@ use crate::ChainSpec;
 /// Domain separator of the donor's cancel authorization (docs/game-spec.md
 /// §8). Versioned: a canister with different rules is a different game and
 /// gets a different domain.
-pub const DOMAIN: &[u8] = b"crown:subscription:v1";
+pub const DOMAIN: &str = "crown:subscription:v1";
 
-/// The single action byte of the message protocol. Frozen forever.
-pub const ACTION_CANCEL: u8 = 0;
+/// The single action this protocol has, as the message spells it. Frozen.
+pub const ACTION_CANCEL: &str = "cancel";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthError {
@@ -38,24 +38,35 @@ impl AuthError {
     }
 }
 
-/// Length-prefixed part: u32 le length, then the bytes. Variable-length
-/// parts are always framed so no two field splits share an encoding.
-fn lp(out: &mut Vec<u8>, part: &[u8]) {
-    out.extend((part.len() as u32).to_le_bytes());
-    out.extend_from_slice(part);
-}
-
 /// The message the donor signs to authorize a cancel (docs/game-spec.md §8):
-/// `DOMAIN ‖ lp(chain) ‖ lp(canister_id) ‖ lp(escrow) ‖ ACTION_CANCEL`.
-/// Bound to the cluster, this canister and one escrow — it travels nowhere.
-pub fn cancel_authorization(chain: &str, canister_id: &[u8], escrow: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(DOMAIN);
-    lp(&mut out, chain.as_bytes());
-    lp(&mut out, canister_id);
-    lp(&mut out, escrow);
-    out.push(ACTION_CANCEL);
-    out
+/// One field per line, `key: value`:
+///
+/// ```text
+/// crown:subscription:v1
+/// action: cancel
+/// chain: solana-devnet
+/// canister: vg3po-ix777-77774-qaafa-cai
+/// escrow: CS1mmfBkPLimY6WLGczafmQBiQNUKTUmQrCfDBKUJEyz
+/// ```
+///
+/// **Text, because wallets refuse to sign anything else.** Phantom runs
+/// `isValidUTF8` over the payload and rejects the rest with "You cannot sign
+/// solana transactions using sign message" — the old binary layout made
+/// cancelling impossible with the largest Solana wallet. And a donor should
+/// be able to read what they are cancelling: the escrow address here is the
+/// same base58 an explorer shows.
+///
+/// Injective: fixed, ordered keys; the address is base58 and the chain id is
+/// checked by `validate_config`, so no value can carry a newline.
+pub fn cancel_authorization(chain: &str, canister_id: &str, escrow: &[u8]) -> String {
+    format!(
+        "{DOMAIN}\n\
+         action: cancel\n\
+         chain: {chain}\n\
+         canister: {canister_id}\n\
+         escrow: {}\n",
+        bs58::encode(escrow).into_string()
+    )
 }
 
 /// Verifies a wallet signature over `message` by `signer` — the wallet's
@@ -189,6 +200,10 @@ pub fn validate_config() -> Result<(), AuthError> {
 mod tests {
     use super::*;
 
+    const CANISTER: &str = "vg3po-ix777-77774-qaafa-cai";
+    /// base58 of [0xCC; 32], computed independently with python.
+    const ESCROW_B58: &str = "EnTJCS15dqbDTU2XywYSMaScoPv4Py4GzExrtY9DQxoD";
+
     fn spec() -> ChainSpec {
         ChainSpec {
             id: "solana-devnet",
@@ -280,19 +295,45 @@ mod tests {
     // ---- cancel authorization ----------------------------------------------
 
     #[test]
-    fn cancel_authorization_layout_is_pinned() {
-        let message = cancel_authorization("solana-devnet", &[0xAA, 0xBB], &[0xCC; 3]);
-        let mut expected = Vec::new();
-        expected.extend_from_slice(b"crown:subscription:v1");
-        expected.extend(13u32.to_le_bytes());
-        expected.extend_from_slice(b"solana-devnet");
-        expected.extend(2u32.to_le_bytes());
-        expected.extend_from_slice(&[0xAA, 0xBB]);
-        expected.extend(3u32.to_le_bytes());
-        expected.extend_from_slice(&[0xCC; 3]);
-        expected.push(0);
-        assert_eq!(message, expected);
-        assert_eq!(ACTION_CANCEL, 0);
+    fn cancel_authorization_is_pinned() {
+        assert_eq!(
+            cancel_authorization("solana-devnet", CANISTER, &[0xCC; 32]),
+            format!(
+                "crown:subscription:v1\n\
+                 action: cancel\n\
+                 chain: solana-devnet\n\
+                 canister: {CANISTER}\n\
+                 escrow: {ESCROW_B58}\n"
+            )
+        );
+        assert_eq!(ACTION_CANCEL, "cancel");
+    }
+
+    /// The whole point: Phantom rejects anything that is not valid UTF-8, so
+    /// a donor could not cancel at all while this was binary.
+    #[test]
+    fn the_message_is_printable_ascii() {
+        let message = cancel_authorization("solana-devnet", CANISTER, &[0xFF; 32]);
+        assert!(
+            message
+                .chars()
+                .all(|c| c == '\n' || c.is_ascii_graphic() || c == ' '),
+            "not printable: {message:?}"
+        );
+    }
+
+    /// One signature opens one escrow: distinct declarations, distinct texts.
+    #[test]
+    fn distinct_authorizations_render_distinctly() {
+        let messages = [
+            cancel_authorization("solana-devnet", CANISTER, &[0xCC; 32]),
+            cancel_authorization("solana-devnet", CANISTER, &[0xCD; 32]),
+            cancel_authorization("solana-mainnet", CANISTER, &[0xCC; 32]),
+            cancel_authorization("solana-devnet", "aaaaa-aa", &[0xCC; 32]),
+        ];
+        let count = messages.len();
+        let seen: std::collections::BTreeSet<String> = messages.into_iter().collect();
+        assert_eq!(seen.len(), count);
     }
 
     #[test]
@@ -300,9 +341,9 @@ mod tests {
         use ed25519_dalek::Signer;
         let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let address = key.verifying_key().to_bytes().to_vec();
-        let message = cancel_authorization("solana-devnet", &[1], &[2; 32]);
-        let sig = key.sign(&message).to_bytes().to_vec();
-        verify_wallet_signature(&message, &sig, &address).unwrap();
+        let message = cancel_authorization("solana-devnet", CANISTER, &[2; 32]);
+        let sig = key.sign(message.as_bytes()).to_bytes().to_vec();
+        verify_wallet_signature(message.as_bytes(), &sig, &address).unwrap();
 
         // Foreign signer.
         let other = ed25519_dalek::SigningKey::from_bytes(&[10; 32])
@@ -310,25 +351,25 @@ mod tests {
             .to_bytes()
             .to_vec();
         assert_eq!(
-            verify_wallet_signature(&message, &sig, &other),
+            verify_wallet_signature(message.as_bytes(), &sig, &other),
             Err(AuthError::BadSignature)
         );
         // Foreign escrow: same signer, different address.
-        let foreign = cancel_authorization("solana-devnet", &[1], &[3; 32]);
+        let foreign = cancel_authorization("solana-devnet", CANISTER, &[3; 32]);
         assert_eq!(
-            verify_wallet_signature(&foreign, &sig, &address),
+            verify_wallet_signature(foreign.as_bytes(), &sig, &address),
             Err(AuthError::BadSignature)
         );
         // Foreign canister: same escrow, different canister_id.
-        let foreign = cancel_authorization("solana-devnet", &[2], &[2; 32]);
+        let foreign = cancel_authorization("solana-devnet", "aaaaa-aa", &[2; 32]);
         assert_eq!(
-            verify_wallet_signature(&foreign, &sig, &address),
+            verify_wallet_signature(foreign.as_bytes(), &sig, &address),
             Err(AuthError::BadSignature)
         );
         // Foreign cluster: same everything, different chain id.
-        let foreign = cancel_authorization("solana-mainnet", &[1], &[2; 32]);
+        let foreign = cancel_authorization("solana-mainnet", CANISTER, &[2; 32]);
         assert_eq!(
-            verify_wallet_signature(&foreign, &sig, &address),
+            verify_wallet_signature(foreign.as_bytes(), &sig, &address),
             Err(AuthError::BadSignature)
         );
     }

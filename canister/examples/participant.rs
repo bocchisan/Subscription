@@ -4,7 +4,7 @@
 //!
 //! Usage:
 //!   participant cancel-authorization <chain> <canister-principal> <escrow_hex32>
-//!   participant sol-sign <keypair.json> <message_hex>
+//!   participant sol-sign <keypair.json> <message-file>
 //!   participant sol-address <keypair.json>
 
 use candid::Principal;
@@ -36,19 +36,17 @@ fn main() {
                 panic!("cancel-authorization <chain> <canister-principal> <escrow_hex32>");
             };
             let canister = Principal::from_text(canister).expect("principal");
-            hex::encode(auth::cancel_authorization(
-                chain,
-                canister.as_slice(),
-                &hex_arg(escrow),
-            ))
+            auth::cancel_authorization(chain, &canister.to_text(), &hex_arg(escrow))
         }
+        // The message is text with newlines in it, so it travels by file.
         Some("sol-sign") => {
-            let [keypair, message] = &args[2..] else {
-                panic!("sol-sign <keypair.json> <message_hex>");
+            let [keypair, message_file] = &args[2..] else {
+                panic!("sol-sign <keypair.json> <message-file>");
             };
             use ed25519_dalek::Signer;
             let key = solana_key(keypair);
-            hex::encode(key.sign(&hex_arg(message)).to_bytes())
+            let message = std::fs::read(message_file).expect("message file");
+            hex::encode(key.sign(&message).to_bytes())
         }
         Some("sol-address") => {
             let [keypair] = &args[2..] else {
@@ -58,5 +56,7 @@ fn main() {
         }
         _ => panic!("unknown subcommand"),
     };
-    println!("{out}");
+    // No trailing newline: the caller redirects this into the file that gets
+    // signed, and one stray byte is a different message.
+    print!("{out}");
 }

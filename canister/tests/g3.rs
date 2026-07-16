@@ -114,8 +114,8 @@ fn donor_cancel_is_signed() {
     let donor = key.verifying_key().to_bytes();
     let escrow = escrow_of(&resolver, &donor, NONCE);
 
-    let authorization = auth::cancel_authorization(common::CHAIN, canister.as_slice(), &escrow);
-    let signature = key.sign(&authorization).to_bytes().to_vec();
+    let authorization = auth::cancel_authorization(common::CHAIN, &canister.to_text(), &escrow);
+    let signature = key.sign(authorization.as_bytes()).to_bytes().to_vec();
 
     let signed =
         request_cancel(&pic, canister, &cancel_arg(id, &donor, signature)).expect("donor cancels");
@@ -131,7 +131,7 @@ fn donor_cancel_is_signed() {
 
     // A replay of the same authorization returns an equivalent signature:
     // nothing is stored, terminality is onchain.
-    let signature = key.sign(&authorization).to_bytes().to_vec();
+    let signature = key.sign(authorization.as_bytes()).to_bytes().to_vec();
     let again = request_cancel(&pic, canister, &cancel_arg(id, &donor, signature)).expect("replay");
     assert_eq!(again.escrow, signed.escrow);
     assert!(verifies(&resolver, &message, &again.signature));
@@ -149,8 +149,8 @@ fn foreign_signatures_are_rejected() {
 
     // A foreign wallet signs the right authorization: not the donor.
     let foreign = SigningKey::from_bytes(&[10; 32]);
-    let authorization = auth::cancel_authorization(common::CHAIN, canister.as_slice(), &escrow);
-    let signature = foreign.sign(&authorization).to_bytes().to_vec();
+    let authorization = auth::cancel_authorization(common::CHAIN, &canister.to_text(), &escrow);
+    let signature = foreign.sign(authorization.as_bytes()).to_bytes().to_vec();
     let err = request_cancel(&pic, canister, &cancel_arg(id, &donor, signature))
         .expect_err("foreign signer");
     assert!(err.contains("bad signature"), "unexpected error: {err}");
@@ -158,22 +158,22 @@ fn foreign_signatures_are_rejected() {
     // The donor signs for a different escrow (another nonce): binding fails.
     let other_escrow = escrow_of(&resolver, &donor, NONCE + 1);
     let authorization =
-        auth::cancel_authorization(common::CHAIN, canister.as_slice(), &other_escrow);
-    let signature = key.sign(&authorization).to_bytes().to_vec();
+        auth::cancel_authorization(common::CHAIN, &canister.to_text(), &other_escrow);
+    let signature = key.sign(authorization.as_bytes()).to_bytes().to_vec();
     let err = request_cancel(&pic, canister, &cancel_arg(id, &donor, signature))
         .expect_err("foreign escrow");
     assert!(err.contains("bad signature"), "unexpected error: {err}");
 
     // The donor signs the escrow under a foreign canister id.
-    let authorization = auth::cancel_authorization(common::CHAIN, &[0xEE; 10], &escrow);
-    let signature = key.sign(&authorization).to_bytes().to_vec();
+    let authorization = auth::cancel_authorization(common::CHAIN, "aaaaa-aa", &escrow);
+    let signature = key.sign(authorization.as_bytes()).to_bytes().to_vec();
     let err = request_cancel(&pic, canister, &cancel_arg(id, &donor, signature))
         .expect_err("foreign canister");
     assert!(err.contains("bad signature"), "unexpected error: {err}");
 
     // The donor signs the escrow under a foreign cluster id.
-    let authorization = auth::cancel_authorization("solana-mainnet", canister.as_slice(), &escrow);
-    let signature = key.sign(&authorization).to_bytes().to_vec();
+    let authorization = auth::cancel_authorization("solana-mainnet", &canister.to_text(), &escrow);
+    let signature = key.sign(authorization.as_bytes()).to_bytes().to_vec();
     let err = request_cancel(&pic, canister, &cancel_arg(id, &donor, signature))
         .expect_err("foreign cluster");
     assert!(err.contains("bad signature"), "unexpected error: {err}");
@@ -198,8 +198,8 @@ fn forged_donor_derives_a_foreign_escrow() {
     let attacker_donor = attacker.verifying_key().to_bytes();
     let attacker_escrow = escrow_of(&resolver, &attacker_donor, NONCE);
     let authorization =
-        auth::cancel_authorization(common::CHAIN, canister.as_slice(), &attacker_escrow);
-    let signature = attacker.sign(&authorization).to_bytes().to_vec();
+        auth::cancel_authorization(common::CHAIN, &canister.to_text(), &attacker_escrow);
+    let signature = attacker.sign(authorization.as_bytes()).to_bytes().to_vec();
     let signed = request_cancel(&pic, canister, &cancel_arg(id, &attacker_donor, signature))
         .expect("signs for the forged fields' own address");
 

@@ -23,8 +23,9 @@ fn subscription_id_of(bytes: &[u8]) -> Result<[u8; 32], String> {
         .map_err(|_| "subscription id must be 32 bytes".to_string())
 }
 
-fn canister_id() -> Vec<u8> {
-    ic_cdk::api::canister_self().as_slice().to_vec()
+/// The canister's own principal, in the text form the signed message shows.
+fn canister_id() -> String {
+    ic_cdk::api::canister_self().to_text()
 }
 
 // ---- updates -----------------------------------------------------------------
@@ -157,7 +158,7 @@ async fn request_cancel(arg: CancelArg) -> Result<SignedCancel, String> {
     .map_err(|e| e.text().to_string())?;
 
     let authorization = auth::cancel_authorization(&arg.chain, &canister_id(), &escrow);
-    auth::verify_wallet_signature(&authorization, &arg.signature, &arg.donor)
+    auth::verify_wallet_signature(authorization.as_bytes(), &arg.signature, &arg.donor)
         .map_err(|e| e.text().to_string())?;
 
     let program = bs58::decode(spec.factory)

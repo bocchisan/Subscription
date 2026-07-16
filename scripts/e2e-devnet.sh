@@ -221,8 +221,11 @@ read -r RELEASED SETTLED <<<"$(driver state "$SOL_RPC_URL" "$ESCROW")"
 [ "$RELEASED" = "2" ] && [ "$SETTLED" = "false" ] || { echo "FAIL: state $RELEASED $SETTLED"; exit 1; }
 
 echo "== act 3: the donor cancels — the remainder returns at once"
-AUTH=$(participant cancel-authorization solana-devnet "$GAME_ID" "$ESCROW_HEX")
-AUTH_SIG=$(participant sol-sign "$SOL_DONOR_KEYPAIR" "$AUTH")
+# The authorization is UTF-8 text with newlines (auth.rs): by file, not by arg.
+AUTH_FILE=$(mktemp)
+participant cancel-authorization solana-devnet "$GAME_ID" "$ESCROW_HEX" > "$AUTH_FILE"
+AUTH_SIG=$(participant sol-sign "$SOL_DONOR_KEYPAIR" "$AUTH_FILE")
+rm -f "$AUTH_FILE"
 CANCEL_SIG=$(cancel_json "$SUB_A" "$AUTH_SIG" | result_field signature)
 [ -n "$CANCEL_SIG" ] || { echo "FAIL: no cancel signature"; exit 1; }
 DONOR_BEFORE=$(driver balance "$SOL_RPC_URL" "$DONOR")
