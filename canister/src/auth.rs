@@ -51,8 +51,8 @@ impl AuthError {
 ///
 /// **Text, because wallets refuse to sign anything else.** Phantom runs
 /// `isValidUTF8` over the payload and rejects the rest with "You cannot sign
-/// solana transactions using sign message" — the old binary layout made
-/// cancelling impossible with the largest Solana wallet. And a donor should
+/// solana transactions using sign message" — a binary layout here would
+/// make cancelling impossible with the largest Solana wallet. A donor should
 /// be able to read what they are cancelling: the escrow address here is the
 /// same base58 an explorer shows.
 ///
