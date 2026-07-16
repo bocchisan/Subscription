@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
-# G4 e2e (docs/build-plan.md): подписи канистры против реального devnet.
+# G4 e2e (docs/build-plan.md): canister signatures against the real devnet.
 #
-# На одной локальной реплике: crown-index (читает реальный devnet) и игровая
-# канистра (threshold-ключ локальной реплики). Таймеры сжаты: период куска
-# 45 с (прод-значения — политика клиента, канистре всё равно); refund-эскроу
-# рождается с t0 в прошлом, чтобы RELEASE_MARGIN (900 с, константа деплоя
-# формы) был уже исчерпан — ноль ожидания. Акты:
-#   1. эскроу S (3 куска × 45 с): кусок 0 выпускается сразу по подписи
-#      канистры → комиссия кошельку игры, остаток через сплиттер владельцу;
-#      кусок 1 до срока — отказ
-#      канистры (негатив);
-#   2. после созревания кусков 1 и 2: подпись куска 2 валидна, но release(2)
-#      ревертится формой — порядок держит ончейн (негатив); подпись чужой
-#      подписки не открывает S (негатив); release(1) проходит;
-#   3. отмена донором: авторизация §8 → request_cancel → cancel — остаток
-#      (кусок 2) вернулся донору, эскроу терминален;
-#   4. эскроу R вне игры (t0 = now − 2000): refund() сразу — Settled нет;
-#   5. книга: донору +2 куска у владельца; после cancel/refund не меняется;
-#      аномалий ноль.
+# One local replica runs both crown-index (reading the real devnet) and the
+# game canister (the replica's threshold key). Timers are compressed: the
+# chunk period is 45 s (production values are client policy, the canister
+# does not care); the refund escrow is born with t0 in the past so that
+# RELEASE_MARGIN (900 s, a deploy constant of the shape) is already spent —
+# zero waiting. Acts:
+#   1. escrow S (3 chunks × 45 s): chunk 0 releases right away on the
+#      canister's signature → the game's fee to its wallet, the rest to the
+#      owner through the splitter; chunk 1 before its due time — the
+#      canister refuses (a negative);
+#   2. once chunks 1 and 2 mature: the signature for chunk 2 is valid, but
+#      release(2) reverts in the shape — the order is held on-chain (a
+#      negative); a foreign subscription's signature does not open S (a
+#      negative); release(1) passes;
+#   3. cancel by the donor: the §8 authorization → request_cancel → cancel —
+#      the remainder (chunk 2) returns to the donor, the escrow is terminal;
+#   4. escrow R outside the game (t0 = now − 2000): refund() right away —
+#      no Settled;
+#   5. the book: the donor gains +2 chunks at the owner; unchanged after
+#      cancel/refund; zero anomalies.
 #
-# Полный прогон ~5–10 минут (созревание кусков + ингест книги).
+# The full run is ~5–10 minutes (chunk maturation + book ingest).
 #
 # Usage: scripts/e2e-devnet.sh
 set -euo pipefail
@@ -27,12 +30,13 @@ cd "$(dirname "$0")/.."
 
 SOL_RPC_URL=${SOL_RPC_URL:-https://api.devnet.solana.com}
 SOL_DONOR_KEYPAIR=${SOL_DONOR_KEYPAIR:-$HOME/.cache/crown-e2e/donor.json}
-# Постоянный владелец канала (тот же стример, что в e2e других игр):
-# выплаты остаются возвращаемыми между прогонами.
+# The permanent channel owner (the same streamer as the other games' e2e):
+# payouts stay recoverable between runs.
 SOL_OWNER_KEYPAIR=${SOL_OWNER_KEYPAIR:-$HOME/.cache/crown-e2e/streamer.json}
 CORE=$(cd ../../Crown-Core && pwd)
 
-# Короткие таймеры теста: период куска и суммы ужаты под devnet-кошелёк.
+# Short test timers: the chunk period and amounts are sized to the devnet
+# wallet.
 PERIOD=45
 N_CHUNKS=3
 CHUNK=40000
