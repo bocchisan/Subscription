@@ -105,7 +105,7 @@ fn verifies(resolver: &[u8], message: &[u8], signature: &[u8]) -> bool {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
 fn donor_cancel_is_signed() {
     let (pic, canister) = common::setup();
     let id = [1u8; 32];
@@ -138,7 +138,7 @@ fn donor_cancel_is_signed() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
 fn foreign_signatures_are_rejected() {
     let (pic, canister) = common::setup();
     let id = [2u8; 32];
@@ -179,8 +179,62 @@ fn foreign_signatures_are_rejected() {
     assert!(err.contains("bad signature"), "unexpected error: {err}");
 }
 
+/// Cancel takes the same birth fields as release and must refuse the same
+/// malformed ones — as values, not traps. A regression here either panics
+/// the canister on an ingress call anyone can make, or spends a threshold
+/// derivation on arguments that could never name an escrow.
 #[test]
-#[ignore]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
+fn malformed_cancel_requests_are_rejected() {
+    let (pic, canister) = common::setup();
+    let id = [4u8; 32];
+    let key = donor_key();
+    let donor = key.verifying_key().to_bytes();
+    let resolver = common::resolver_of(&pic, canister, common::CHAIN, &id).expect("resolver");
+    let escrow = escrow_of(&resolver, &donor, NONCE);
+    let authorization = auth::cancel_authorization(common::CHAIN, &canister.to_text(), &escrow);
+    let signature = || key.sign(authorization.as_bytes()).to_bytes().to_vec();
+
+    // Unknown chain: refused before the key derivation is paid for.
+    let mut arg = cancel_arg(id, &donor, signature());
+    arg.chain = "solana-mainnet".to_string();
+    let err = request_cancel(&pic, canister, &arg).expect_err("unknown chain");
+    assert!(err.contains("unknown chain"), "unexpected error: {err}");
+
+    // subscription_id must be exactly 32 bytes: it is the derivation path.
+    let mut arg = cancel_arg(id, &donor, signature());
+    arg.subscription_id = ByteBuf::from(vec![4u8; 31]);
+    let err = request_cancel(&pic, canister, &arg).expect_err("short id");
+    assert!(err.contains("32 bytes"), "unexpected error: {err}");
+
+    // A donor that is not a 32-byte key names no address and no verifier.
+    let mut arg = cancel_arg(id, &donor, signature());
+    arg.donor = ByteBuf::from(vec![0x11; 31]);
+    let err = request_cancel(&pic, canister, &arg).expect_err("short donor");
+    assert!(err.contains("bad field length"), "unexpected error: {err}");
+
+    // Same for any recipient of the row.
+    let mut arg = cancel_arg(id, &donor, signature());
+    arg.recipients = vec![ByteBuf::from(vec![0x22; 33])];
+    let err = request_cancel(&pic, canister, &arg).expect_err("long recipient");
+    assert!(err.contains("bad field length"), "unexpected error: {err}");
+
+    // A signature of the wrong size is a bad signature, not a panic.
+    for len in [0usize, 63, 65] {
+        let arg = cancel_arg(id, &donor, vec![7u8; len]);
+        let err = request_cancel(&pic, canister, &arg).expect_err("bad signature length");
+        assert!(err.contains("bad signature"), "unexpected error: {err}");
+    }
+
+    // The honest request still works: none of the above was rejected for an
+    // unrelated reason.
+    let signed = request_cancel(&pic, canister, &cancel_arg(id, &donor, signature()))
+        .expect("donor cancels");
+    assert_eq!(signed.escrow.as_slice(), escrow);
+}
+
+#[test]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
 fn forged_donor_derives_a_foreign_escrow() {
     let (pic, canister) = common::setup();
     let id = [3u8; 32];

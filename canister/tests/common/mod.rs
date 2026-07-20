@@ -52,6 +52,18 @@ pub fn update<R: for<'a> candid::utils::ArgumentDecoder<'a>>(
     candid::utils::decode_args(&reply).expect("reply decodes")
 }
 
+pub fn query<R: for<'a> candid::utils::ArgumentDecoder<'a>>(
+    pic: &PocketIc,
+    canister: Principal,
+    method: &str,
+    arg: Vec<u8>,
+) -> R {
+    let reply = pic
+        .query_call(canister, Principal::anonymous(), method, arg)
+        .unwrap_or_else(|reject| panic!("{method} rejected: {reject:?}"));
+    candid::utils::decode_args(&reply).expect("reply decodes")
+}
+
 pub fn resolver_of(
     pic: &PocketIc,
     canister: Principal,

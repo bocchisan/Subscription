@@ -61,16 +61,23 @@ fn fee_wallet() -> [u8; 32] {
 
 /// The escrow address the canister must derive: crown-salt over the birth
 /// fields (resolver included), then the PDA arithmetic.
-fn expected_escrow(resolver: &[u8], t0: i64) -> Vec<u8> {
+fn expected_escrow(
+    resolver: &[u8],
+    t0: i64,
+    period: i64,
+    recipients: &[[u8; 32]],
+    shares: &[u16],
+    n_chunks: u16,
+) -> Vec<u8> {
     let resolver: [u8; 32] = resolver.try_into().expect("32 bytes");
     let salt = crown_salt::stream::salt(
         &DONOR,
-        &[RECIPIENT],
-        &[10_000],
+        recipients,
+        shares,
         CHUNK,
-        N_CHUNKS,
+        n_chunks,
         t0,
-        PERIOD,
+        period,
         &resolver,
         common::FEE_BPS,
         &fee_wallet(),
@@ -115,7 +122,7 @@ fn verifies(resolver: &[u8], message: &[u8], signature: &[u8]) -> bool {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
 fn resolvers_are_stable_and_distinct() {
     let (pic, canister) = common::setup();
     let a = common::resolver_of(&pic, canister, common::CHAIN, &[1u8; 32]).expect("resolver a");
@@ -129,7 +136,7 @@ fn resolvers_are_stable_and_distinct() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
 fn release_respects_the_schedule() {
     let (pic, canister) = common::setup();
     let id = [3u8; 32];
@@ -145,7 +152,10 @@ fn release_respects_the_schedule() {
     pic.advance_time(Duration::from_secs(3_700));
     let signed = request_release(&pic, canister, &arg).expect("due chunk signs");
     assert_eq!(signed.index, 0);
-    assert_eq!(signed.escrow.as_slice(), expected_escrow(&resolver, t0));
+    assert_eq!(
+        signed.escrow.as_slice(),
+        expected_escrow(&resolver, t0, PERIOD, &[RECIPIENT], &[10_000], N_CHUNKS)
+    );
     let message = release_message(&signed.escrow, 0);
     assert!(verifies(&resolver, &message, &signed.signature));
 
@@ -161,7 +171,7 @@ fn release_respects_the_schedule() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
 fn signature_binds_subscription_and_index() {
     let (pic, canister) = common::setup();
     let id = [4u8; 32];
@@ -183,7 +193,7 @@ fn signature_binds_subscription_and_index() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
 fn retry_signs_the_same_message() {
     let (pic, canister) = common::setup();
     let id = [6u8; 32];
@@ -201,8 +211,139 @@ fn retry_signs_the_same_message() {
     assert!(verifies(&resolver, &message, &second.signature));
 }
 
+/// A stream split between several recipients is the ordinary case. The
+/// canister must fold the whole row — every key and every share, in order —
+/// into the address it signs for; otherwise two different splits would share
+/// one escrow and one signature would move the wrong money.
 #[test]
-#[ignore]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
+fn several_recipients_derive_the_declared_escrow() {
+    let (pic, canister) = common::setup();
+    let id = [8u8; 32];
+    let resolver = common::resolver_of(&pic, canister, common::CHAIN, &id).expect("resolver");
+
+    let recipients = [[0x22u8; 32], [0x23; 32], [0x24; 32]];
+    let shares = [5_000u16, 3_000, 2_000];
+    let t0 = common::now_seconds(&pic) - 10;
+
+    let mut arg = release_arg(id, t0, 0);
+    arg.recipients = recipients
+        .iter()
+        .map(|r| ByteBuf::from(r.to_vec()))
+        .collect();
+    arg.shares = shares.to_vec();
+
+    let signed = request_release(&pic, canister, &arg).expect("due");
+    let expected = expected_escrow(&resolver, t0, PERIOD, &recipients, &shares, N_CHUNKS);
+    assert_eq!(signed.escrow.as_slice(), expected);
+    assert!(verifies(
+        &resolver,
+        &release_message(&signed.escrow, 0),
+        &signed.signature
+    ));
+
+    // The single-recipient stream of the same subscription is a different
+    // escrow: K and the row are in the salt.
+    let single = request_release(&pic, canister, &release_arg(id, t0, 0)).expect("due");
+    assert_ne!(single.escrow, signed.escrow);
+
+    // So is the same row in a different order.
+    let mut permuted = arg;
+    permuted.recipients = [recipients[0], recipients[2], recipients[1]]
+        .iter()
+        .map(|r| ByteBuf::from(r.to_vec()))
+        .collect();
+    let permuted = request_release(&pic, canister, &permuted).expect("due");
+    assert_ne!(permuted.escrow, signed.escrow);
+}
+
+/// The canister's whole law is `now >= t0 + index*period`; it knows nothing
+/// of `n_chunks`. These are the edges that would silently change if anyone
+/// added a bound: the last chunk must stay signable, `period = 0` must make
+/// the whole stream due at t0, and a single-chunk stream must work. An
+/// `index >= n_chunks` is signed too — unexecutable onchain, an accepted
+/// cycle burn (game-spec §13.1); if that ever becomes a rejection, this test
+/// and §13.1 change together.
+#[test]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
+fn schedule_edges_are_signable() {
+    let (pic, canister) = common::setup();
+    let id = [9u8; 32];
+    let resolver = common::resolver_of(&pic, canister, common::CHAIN, &id).expect("resolver");
+    let now = common::now_seconds(&pic);
+
+    // The last chunk of the stream, matured.
+    let t0 = now - PERIOD * i64::from(N_CHUNKS);
+    let last = N_CHUNKS - 1;
+    let signed = request_release(&pic, canister, &release_arg(id, t0, last)).expect("last chunk");
+    assert_eq!(signed.index, last);
+    assert!(verifies(
+        &resolver,
+        &release_message(&signed.escrow, last),
+        &signed.signature
+    ));
+
+    // Past the end of the stream: signed, and for the same escrow — the
+    // index is in the message, never in the address.
+    let past = request_release(&pic, canister, &release_arg(id, t0, N_CHUNKS))
+        .expect("index beyond n_chunks is signed today");
+    assert_eq!(past.escrow, signed.escrow);
+    assert!(verifies(
+        &resolver,
+        &release_message(&past.escrow, N_CHUNKS),
+        &past.signature
+    ));
+    assert!(!verifies(
+        &resolver,
+        &release_message(&past.escrow, N_CHUNKS),
+        &signed.signature
+    ));
+
+    // period = 0: every chunk is due at t0 at once, none before it.
+    let mut arg = release_arg(id, now + 100, N_CHUNKS - 1);
+    arg.period = 0;
+    let err = request_release(&pic, canister, &arg).expect_err("t0 not reached");
+    assert!(err.contains("not due"), "unexpected error: {err}");
+    arg.t0 = now - 1;
+    let signed = request_release(&pic, canister, &arg).expect("period 0 matures at t0");
+    assert_eq!(
+        signed.escrow.as_slice(),
+        expected_escrow(&resolver, arg.t0, 0, &[RECIPIENT], &[10_000], N_CHUNKS)
+    );
+
+    // A one-chunk stream: chunk 0 is the whole of it.
+    let mut arg = release_arg(id, now - 1, 0);
+    arg.n_chunks = 1;
+    let signed = request_release(&pic, canister, &arg).expect("single chunk");
+    assert_eq!(
+        signed.escrow.as_slice(),
+        expected_escrow(&resolver, arg.t0, PERIOD, &[RECIPIENT], &[10_000], 1)
+    );
+    assert!(verifies(
+        &resolver,
+        &release_message(&signed.escrow, 0),
+        &signed.signature
+    ));
+}
+
+/// The one query on the surface. It names the law the signatures obey, so a
+/// client that trusts a version can tell a canister running different rules.
+#[test]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
+fn logic_version_is_served() {
+    let (pic, canister) = common::setup();
+    let (version,): (u32,) = common::query(
+        &pic,
+        canister,
+        "get_logic_version",
+        Encode!().expect("encodes"),
+    );
+    assert_eq!(version, subscription_logic::LOGIC_VERSION);
+    assert_eq!(version, 1);
+}
+
+#[test]
+#[ignore = "needs pocket-ic; run scripts/test-canister.sh"]
 fn malformed_requests_are_rejected() {
     let (pic, canister) = common::setup();
     let t0 = common::now_seconds(&pic) - 10;
