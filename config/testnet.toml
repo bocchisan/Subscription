@@ -2,7 +2,7 @@
 #
 # Ключи ровно по docs/game-spec.md §9:
 #   threshold_key — имя threshold-ключа среды
-#   per-chain: id, factory, domain
+#   per-chain: id, factory, domain, fee_bps, fee_wallet
 #
 # factory / domain копируются из crown-factory/deploy/testnet.toml (форма
 # stream); этот репозиторий их не порождает. Локальная реплика dfx и

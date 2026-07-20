@@ -186,9 +186,11 @@ escrow: CS1mmfBkPLimY6WLGczafmQBiQNUKTUmQrCfDBKUJEyz
 threshold_key = "key_1"                # имя threshold-ключа среды
 
 [[chain]]
-id      = "solana-devnet"              # кластер
-factory = "<program id>"               # форма stream, из crown-factory deploy/
-domain  = "crown:stream:solana-devnet" # входит в message подписи
+id         = "solana-devnet"              # кластер
+factory    = "<program id>"               # форма stream, из crown-factory deploy/
+domain     = "crown:stream:solana-devnet" # входит в message подписи
+fee_bps    = 300                          # прейскурант игры: поля рождения
+fee_wallet = "<wallet>"                   # каждого её эскроу, часть соли
 ```
 
 Чего в конфиге нет: `crown_index` (книга игре не нужна), сплиттер, казна, RPC-URL, `release_margin` (ончейн-константа формы, у канистры нет потребителя), цены, периоды, кворумы. Значения `factory`, `domain` берутся из `crown-factory/deploy/`; этот репозиторий их не порождает — только копирует. `fee_bps` и `fee_wallet` в конфиге есть: прейскурант игры, часть соли каждого её эскроу — эскроу с чужой ценой не получает подписи; комиссию снимает сам эскроу при выпуске, отмена и возврат бесплатны. Чейны в конфиге попарно различны по `(id, factory, domain)` — иначе одна пара `(поля, path)` дала бы один адрес под двумя доменами; проверяется при деплое, как в «Сборе».
