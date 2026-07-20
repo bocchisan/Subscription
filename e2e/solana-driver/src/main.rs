@@ -1,15 +1,18 @@
 //! Devnet chain driver for the e2e: the transactions around the game that
 //! the game itself never sends. Every resolver signature arrives from the
 //! outside — produced by the canister, injected here byte for byte. The
-//! subscription shape is one recipient with the whole row (share 10000).
+//! distribution row is a parameter: a subscription is usually one recipient
+//! with the whole row (share 10000), but the shape pays K of them.
 //!
 //! Usage:
-//!   e2e-solana create  <rpc> <donor.json> <recipient_b58> <chunk> <n_chunks> <t0> <period> <resolver_hex32> <fee_bps> <fee_wallet_b58> <nonce>
-//!   e2e-solana release <rpc> <payer.json> <escrow_b58> <index> <sig_hex> <resolver_hex32>
-//!   e2e-solana cancel  <rpc> <payer.json> <escrow_b58> <sig_hex> <resolver_hex32>
-//!   e2e-solana refund  <rpc> <payer.json> <escrow_b58>
-//!   e2e-solana state   <rpc> <escrow_b58>
-//!   e2e-solana balance <rpc> <owner_b58>
+//!   e2e-solana create       <rpc> <donor.json> <recipients_b58_csv> <shares_csv> <chunk> <n_chunks> <t0> <period> <resolver_hex32> <fee_bps> <fee_wallet_b58> <nonce>
+//!   e2e-solana release      <rpc> <payer.json> <escrow_b58> <index> <sig_hex> <resolver_hex32>
+//!   e2e-solana cancel       <rpc> <payer.json> <escrow_b58> <sig_hex> <resolver_hex32>
+//!   e2e-solana refund       <rpc> <payer.json> <escrow_b58>
+//!   e2e-solana state        <rpc> <escrow_b58>
+//!   e2e-solana balance      <rpc> <owner_b58>
+//!   e2e-solana sol          <rpc> <account_b58>
+//!   e2e-solana ata-lamports <rpc> <owner_b58>
 
 use std::str::FromStr;
 
@@ -96,17 +99,24 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("create") => {
-            let [rpc, keypair, recipient, chunk, n_chunks, t0, period, resolver, fee_bps, fee_wallet, nonce] =
+            let [rpc, keypair, recipients, shares, chunk, n_chunks, t0, period, resolver, fee_bps, fee_wallet, nonce] =
                 &args[2..]
             else {
                 panic!(
-                    "create <rpc> <donor.json> <recipient_b58> <chunk> <n_chunks> <t0> <period> \
-                     <resolver_hex32> <fee_bps> <fee_wallet_b58> <nonce>"
+                    "create <rpc> <donor.json> <recipients_b58_csv> <shares_csv> <chunk> \
+                     <n_chunks> <t0> <period> <resolver_hex32> <fee_bps> <fee_wallet_b58> <nonce>"
                 );
             };
             let rpc = client(rpc);
             let donor = read_keypair_file(keypair).expect("donor keypair");
-            let recipient = Pubkey::from_str(recipient).expect("recipient");
+            let recipients: Vec<Pubkey> = recipients
+                .split(',')
+                .map(|r| Pubkey::from_str(r).expect("recipient"))
+                .collect();
+            let shares: Vec<u16> = shares
+                .split(',')
+                .map(|s| s.parse().expect("share"))
+                .collect();
             let chunk: u64 = chunk.parse().expect("chunk");
             let n_chunks: u16 = n_chunks.parse().expect("n_chunks");
             let t0: i64 = t0.parse().expect("t0");
@@ -116,8 +126,6 @@ fn main() {
             let fee_wallet = Pubkey::from_str(fee_wallet).expect("fee wallet");
             let resolver =
                 Pubkey::new_from_array(hex::decode(resolver).unwrap().try_into().unwrap());
-            let recipients = vec![recipient];
-            let shares = vec![10_000u16];
             let salt = factory::birth_salt(
                 &donor.pubkey(),
                 &recipients,
@@ -176,7 +184,15 @@ fn main() {
             let signature: [u8; 64] = hex::decode(signature).unwrap().try_into().unwrap();
             let resolver: [u8; 32] = hex::decode(resolver).unwrap().try_into().unwrap();
             let state = escrow_state(&rpc, &escrow);
-            let recipient = state.recipients[0];
+            // The shape expects one (recipient, recipient_usdc) pair per
+            // nonzero share, in row order.
+            let paid: Vec<Pubkey> = state
+                .recipients
+                .iter()
+                .zip(&state.shares)
+                .filter(|(_, &share)| share > 0)
+                .map(|(recipient, _)| *recipient)
+                .collect();
 
             let mut tail = vec![factory::RELEASE_TAG];
             tail.extend_from_slice(&index.to_le_bytes());
@@ -199,22 +215,22 @@ fn main() {
                 token_program: spl_token::ID,
             };
             let mut metas = accounts.to_account_metas(None);
-            metas.push(AccountMeta::new_readonly(recipient, false));
-            metas.push(AccountMeta::new(ata(&recipient), false));
-            send(
-                &rpc,
-                &payer,
-                &[
-                    create_ata_ix(&payer.pubkey(), &recipient),
-                    create_ata_ix(&payer.pubkey(), &state.fee_wallet),
-                    verdict_ix(&resolver, &signature, &message),
-                    Instruction {
-                        program_id: factory::ID,
-                        accounts: metas,
-                        data: factory::instruction::Release { index }.data(),
-                    },
-                ],
-            );
+            let mut instructions: Vec<Instruction> = paid
+                .iter()
+                .map(|recipient| create_ata_ix(&payer.pubkey(), recipient))
+                .collect();
+            for recipient in &paid {
+                metas.push(AccountMeta::new_readonly(*recipient, false));
+                metas.push(AccountMeta::new(ata(recipient), false));
+            }
+            instructions.push(create_ata_ix(&payer.pubkey(), &state.fee_wallet));
+            instructions.push(verdict_ix(&resolver, &signature, &message));
+            instructions.push(Instruction {
+                program_id: factory::ID,
+                accounts: metas,
+                data: factory::instruction::Release { index }.data(),
+            });
+            send(&rpc, &payer, &instructions);
         }
         Some("cancel") => {
             let [rpc, keypair, escrow, signature, resolver] = &args[2..] else {
@@ -298,6 +314,28 @@ fn main() {
                     .unwrap_or(0),
             };
             println!("{amount}");
+        }
+        Some("sol") => {
+            let [rpc, account] = &args[2..] else {
+                panic!("sol <rpc> <account_b58>");
+            };
+            let rpc = client(rpc);
+            let account = Pubkey::from_str(account).expect("account");
+            println!("{}", rpc.get_balance(&account).expect("balance"));
+        }
+        // The rent an ATA holds, and — since a closed account holds none —
+        // the terminal-release proof that it is gone.
+        Some("ata-lamports") => {
+            let [rpc, owner] = &args[2..] else {
+                panic!("ata-lamports <rpc> <owner_b58>");
+            };
+            let rpc = client(rpc);
+            let owner = Pubkey::from_str(owner).expect("owner");
+            let lamports = rpc
+                .get_account(&ata(&owner))
+                .map(|a| a.lamports)
+                .unwrap_or(0);
+            println!("{lamports}");
         }
         _ => panic!("unknown subcommand"),
     }

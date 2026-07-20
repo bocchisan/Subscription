@@ -4,23 +4,42 @@
 # One local replica runs both crown-index (reading the real devnet) and the
 # game canister (the replica's threshold key). Timers are compressed: the
 # chunk period is 45 s (production values are client policy, the canister
-# does not care); the refund escrow is born with t0 in the past so that
-# RELEASE_MARGIN (900 s, a deploy constant of the shape) is already spent —
-# zero waiting. Acts:
-#   1. escrow S (3 chunks × 45 s): chunk 0 releases right away on the
-#      canister's signature → the game's fee to its wallet, the rest to the
-#      owner through the splitter; chunk 1 before its due time — the
-#      canister refuses (a negative);
-#   2. once chunks 1 and 2 mature: the signature for chunk 2 is valid, but
+# does not care); the escrows that must look dead are born with t0 in the
+# past so that RELEASE_MARGIN (900 s, a deploy constant of the shape) is
+# already spent — zero waiting. Four escrows, one subscription:
+#   S — 3 chunks, the main line: released, then cancelled;
+#   T — 2 chunks, released to the end: the terminal edge;
+#   M — 1 chunk, two recipients 7000/3000: the distribution row;
+#   R — 1 chunk, born overdue: the insurance edge.
+# Acts:
+#   1. escrow S (3 chunks × 45 s): refund() of a live stream reverts (a
+#      negative); chunk 1 before its due time — the canister refuses (a
+#      negative); chunk 0 releases right away on the canister's signature →
+#      the game's fee to its wallet, the rest to the owner through the
+#      splitter;
+#   2. escrow T (2 chunks): chunk 0 releases at once;
+#   3. once the chunks mature: the signature for S's chunk 2 is valid, but
 #      release(2) reverts in the shape — the order is held on-chain (a
 #      negative); a foreign subscription's signature does not open S (a
 #      negative); release(1) passes;
-#   3. cancel by the donor: the §8 authorization → request_cancel → cancel —
-#      the remainder (chunk 2) returns to the donor, the escrow is terminal;
-#   4. escrow R outside the game (t0 = now − 2000): refund() right away —
-#      no Settled;
-#   5. the book: the donor gains +2 chunks at the owner; unchanged after
-#      cancel/refund; zero anomalies.
+#   4. escrow T, chunk 1 — the last one: the escrow is terminal, its ATA is
+#      closed, and the rent comes back to the donor in lamports;
+#   5. cancel by the donor: the §8 authorization → request_cancel → cancel —
+#      the remainder (S's chunk 2) returns to the donor, the escrow is
+#      terminal;
+#   6. escrow M, two recipients: one release pays both by their shares, the
+#      fee wallet gets the fee of both pieces, and the rounding remainder of
+#      the chunk goes back to the donor;
+#   7. escrow R, born overdue: a release signature is taken but never
+#      executed; refund() returns the money to the donor first, and the
+#      valid signature is then worthless — the deadline beats the verdict
+#      (game-spec §13.3);
+#   8. the book: the donor gains the released pieces at both recipients;
+#      unchanged after cancel/refund; zero anomalies.
+#
+# The book is read as a delta from the value at the start of the run: the
+# local replica is shared and never wiped, so an earlier run's reputation for
+# the same pair of wallets is still there.
 #
 # The full run is ~5–10 minutes (chunk maturation + book ingest).
 #
@@ -31,19 +50,38 @@ cd "$(dirname "$0")/.."
 SOL_RPC_URL=${SOL_RPC_URL:-https://api.devnet.solana.com}
 SOL_DONOR_KEYPAIR=${SOL_DONOR_KEYPAIR:-$HOME/.cache/crown-e2e/donor.json}
 # The permanent channel owner (the same streamer as the other games' e2e):
-# payouts stay recoverable between runs.
+# payouts stay recoverable between runs. The second one exists only for the
+# multi-recipient row.
 SOL_OWNER_KEYPAIR=${SOL_OWNER_KEYPAIR:-$HOME/.cache/crown-e2e/streamer.json}
+SOL_OWNER2_KEYPAIR=${SOL_OWNER2_KEYPAIR:-$HOME/.cache/crown-e2e/streamer2.json}
 CORE=$(cd ../../Crown-Core && pwd)
 
 # Short test timers: the chunk period and amounts are sized to the devnet
 # wallet.
 PERIOD=45
 N_CHUNKS=3
+T_CHUNKS=2
 CHUNK=40000
+# The two-recipient chunk is deliberately not divisible by the row: 7000 and
+# 3000 of 40001 floor to 28000 + 12000, so one unit stays for the donor.
+K_CHUNK=40001
+K_SHARE=7000
+K_SHARE2=3000
 R_CHUNK=1000
+# What a release transaction costs its payer: 5000 lamports per signature,
+# and a release carries two — the payer's own and the resolver's, verified by
+# the ed25519 precompile, which the fee counts like any other. The donor pays
+# it out of the same lamports the closed ATA refunds.
+RELEASE_TX_FEE=10000
 FEE_BPS=$(grep "^fee_bps" config/testnet.toml | cut -d"=" -f2 | tr -d " ")
 FEE_WALLET=$(grep "^fee_wallet" config/testnet.toml | cut -d'"' -f2)
 CHUNK_PAYOUT=$((CHUNK - CHUNK * FEE_BPS / 10000))
+K_PIECE=$((K_CHUNK * K_SHARE / 10000))
+K_PIECE2=$((K_CHUNK * K_SHARE2 / 10000))
+K_PAYOUT=$((K_PIECE - K_PIECE * FEE_BPS / 10000))
+K_PAYOUT2=$((K_PIECE2 - K_PIECE2 * FEE_BPS / 10000))
+K_FEE=$((K_PIECE * FEE_BPS / 10000 + K_PIECE2 * FEE_BPS / 10000))
+K_REMAINDER=$((K_CHUNK - K_PIECE - K_PIECE2))
 NONCE=$(date +%s)
 
 # ---- tooling ------------------------------------------------------------
@@ -100,18 +138,31 @@ resolver_of() { # subscription_id_hex -> resolver hex
     game_call get_resolver "(\"solana-devnet\", blob \"$(blob_hex "$1")\")" --output json \
         | result_field .
 }
+# The birth fields the next signature request declares (game-spec §7: they are
+# presented, never stored). Every act sets them for its own escrow before
+# asking the canister for anything.
+birth() { # recipients_hex_csv shares_csv chunk n_chunks t0 nonce
+    B_RECIPIENTS=""
+    for hex in ${1//,/ }; do B_RECIPIENTS+="blob \"$(blob_hex "$hex")\"; "; done
+    B_SHARES=""
+    for share in ${2//,/ }; do B_SHARES+="$share : nat16; "; done
+    B_CHUNK=$3
+    B_N_CHUNKS=$4
+    B_T0=$5
+    B_NONCE=$6
+}
 release_json() { # subscription_id_hex index
     game_call request_release "(record {
         chain = \"solana-devnet\";
         subscription_id = blob \"$(blob_hex "$1")\";
         donor = blob \"$(blob_hex "$DONOR_HEX")\";
-        recipients = vec { blob \"$(blob_hex "$OWNER_HEX")\" };
-        shares = vec { 10000 : nat16 };
-        chunk = $CHUNK : nat64;
-        n_chunks = $N_CHUNKS : nat16;
-        t0 = $T0 : int64;
+        recipients = vec { $B_RECIPIENTS };
+        shares = vec { $B_SHARES };
+        chunk = $B_CHUNK : nat64;
+        n_chunks = $B_N_CHUNKS : nat16;
+        t0 = $B_T0 : int64;
         period = $PERIOD : int64;
-        nonce = $NONCE : nat64;
+        nonce = $B_NONCE : nat64;
         index = $2 : nat16 })" --output json
 }
 cancel_json() { # subscription_id_hex signature_hex
@@ -119,13 +170,13 @@ cancel_json() { # subscription_id_hex signature_hex
         chain = \"solana-devnet\";
         subscription_id = blob \"$(blob_hex "$1")\";
         donor = blob \"$(blob_hex "$DONOR_HEX")\";
-        recipients = vec { blob \"$(blob_hex "$OWNER_HEX")\" };
-        shares = vec { 10000 : nat16 };
-        chunk = $CHUNK : nat64;
-        n_chunks = $N_CHUNKS : nat16;
-        t0 = $T0 : int64;
+        recipients = vec { $B_RECIPIENTS };
+        shares = vec { $B_SHARES };
+        chunk = $B_CHUNK : nat64;
+        n_chunks = $B_N_CHUNKS : nat16;
+        t0 = $B_T0 : int64;
         period = $PERIOD : int64;
-        nonce = $NONCE : nat64;
+        nonce = $B_NONCE : nat64;
         signature = blob \"$(blob_hex "$2")\" })" --output json
 }
 
@@ -137,10 +188,13 @@ USDC=$(core_value usdc)
 
 DONOR=$(solana-keygen pubkey "$SOL_DONOR_KEYPAIR")
 [ -f "$SOL_OWNER_KEYPAIR" ] || solana-keygen new --no-bip39-passphrase --silent -o "$SOL_OWNER_KEYPAIR"
+[ -f "$SOL_OWNER2_KEYPAIR" ] || solana-keygen new --no-bip39-passphrase --silent -o "$SOL_OWNER2_KEYPAIR"
 OWNER=$(solana-keygen pubkey "$SOL_OWNER_KEYPAIR")
+OWNER2=$(solana-keygen pubkey "$SOL_OWNER2_KEYPAIR")
 DONOR_HEX=$(b58_hex "$DONOR")
 OWNER_HEX=$(b58_hex "$OWNER")
-echo "donor=$DONOR owner=$OWNER"
+OWNER2_HEX=$(b58_hex "$OWNER2")
+echo "donor=$DONOR owner=$OWNER owner2=$OWNER2"
 
 # ---- replica and canisters ------------------------------------------------
 
@@ -192,6 +246,12 @@ dfx deploy subscription
 dfx ledger fabricate-cycles --canister subscription --t 100 >/dev/null
 GAME_ID=$(dfx canister id subscription)
 
+# The book survives an upgrade of crown-index and the replica is never wiped,
+# so what earlier runs credited these wallets is the baseline of this one.
+BASE_REP=$(reputation "$(blob_hex "$DONOR_HEX")" "$(blob_hex "$OWNER_HEX")")
+BASE_REP2=$(reputation "$(blob_hex "$DONOR_HEX")" "$(blob_hex "$OWNER2_HEX")")
+echo "book baseline: owner $BASE_REP, owner2 $BASE_REP2"
+
 # ---- acts -----------------------------------------------------------------
 
 SUB_A=$(python3 -c "import hashlib; print(hashlib.sha256(b'crown:e2e:sub-a:$NONCE').hexdigest())")
@@ -204,9 +264,17 @@ echo "subscription B resolver=$RES_B"
 
 echo "== act 1: the subscription escrow, chunk 0 due at once"
 T0=$(date +%s)
-ESCROW=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" "$CHUNK" "$N_CHUNKS" "$T0" "$PERIOD" "$RES_A" "$FEE_BPS" "$FEE_WALLET" "$NONCE")
+ESCROW=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" 10000 "$CHUNK" "$N_CHUNKS" "$T0" "$PERIOD" "$RES_A" "$FEE_BPS" "$FEE_WALLET" "$NONCE")
 ESCROW_HEX=$(b58_hex "$ESCROW")
-echo "escrow=$ESCROW"
+birth "$OWNER_HEX" 10000 "$CHUNK" "$N_CHUNKS" "$T0" "$NONCE"
+echo "escrow S=$ESCROW"
+
+echo "== negative: refund() of a live stream — the shape reverts"
+# The insurance is not an early exit: nothing is refundable before
+# t0 + released·period + RELEASE_MARGIN.
+if driver refund "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$ESCROW" >/dev/null 2>&1; then
+    echo "FAIL: refund of a live stream passed"; exit 1
+fi
 
 echo "== negative: chunk 1 before its due time — the canister refuses"
 OUT=$(release_json "$SUB_A" 1)
@@ -223,11 +291,27 @@ driver release "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$ESCROW" 0 "$SIG0" "$RES_A"
 OWNER_AFTER=$(driver balance "$SOL_RPC_URL" "$OWNER")
 [ "$OWNER_AFTER" = "$((OWNER_BEFORE + CHUNK_PAYOUT))" ] || { echo "FAIL: owner payout"; exit 1; }
 
-echo "== wait until chunks 1 and 2 mature"
-NOW=$(date +%s); DUE2=$((T0 + 2 * PERIOD + 5))
-[ "$NOW" -lt "$DUE2" ] && sleep $((DUE2 - NOW))
+echo "== act 2: escrow T, the one that will be released to the end"
+T_NONCE=$((NONCE + 2))
+T_T0=$(date +%s)
+ESCROW_T=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" 10000 "$CHUNK" "$T_CHUNKS" "$T_T0" "$PERIOD" "$RES_A" "$FEE_BPS" "$FEE_WALLET" "$T_NONCE")
+echo "escrow T=$ESCROW_T"
+birth "$OWNER_HEX" 10000 "$CHUNK" "$T_CHUNKS" "$T_T0" "$T_NONCE"
+SIG_T0=$(release_json "$SUB_A" 0 | result_field signature)
+[ -n "$SIG_T0" ] || { echo "FAIL: no signature for T chunk 0"; exit 1; }
+OWNER_BEFORE=$(driver balance "$SOL_RPC_URL" "$OWNER")
+driver release "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$ESCROW_T" 0 "$SIG_T0" "$RES_A"
+OWNER_AFTER=$(driver balance "$SOL_RPC_URL" "$OWNER")
+[ "$OWNER_AFTER" = "$((OWNER_BEFORE + CHUNK_PAYOUT))" ] || { echo "FAIL: T chunk 0 payout"; exit 1; }
 
-echo "== negative: a due but out-of-turn chunk — the form reverts, not the canister"
+echo "== wait until S's chunks 1, 2 and T's chunk 1 mature"
+DUE=$((T0 + 2 * PERIOD + 5))
+if [ $((T_T0 + PERIOD + 5)) -gt "$DUE" ]; then DUE=$((T_T0 + PERIOD + 5)); fi
+NOW=$(date +%s)
+if [ "$NOW" -lt "$DUE" ]; then sleep $((DUE - NOW)); fi
+
+echo "== act 3: a due but out-of-turn chunk — the form reverts, not the canister"
+birth "$OWNER_HEX" 10000 "$CHUNK" "$N_CHUNKS" "$T0" "$NONCE"
 SIG2=$(release_json "$SUB_A" 2 | result_field signature)
 [ -n "$SIG2" ] || { echo "FAIL: no signature for due chunk 2"; exit 1; }
 if driver release "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$ESCROW" 2 "$SIG2" "$RES_A" >/dev/null 2>&1; then
@@ -247,7 +331,29 @@ driver release "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$ESCROW" 1 "$SIG1" "$RES_A"
 read -r RELEASED SETTLED <<<"$(driver state "$SOL_RPC_URL" "$ESCROW")"
 [ "$RELEASED" = "2" ] && [ "$SETTLED" = "false" ] || { echo "FAIL: state $RELEASED $SETTLED"; exit 1; }
 
-echo "== act 3: the donor cancels — the remainder returns at once"
+echo "== act 4: the last chunk of T is terminal and gives the rent back"
+birth "$OWNER_HEX" 10000 "$CHUNK" "$T_CHUNKS" "$T_T0" "$T_NONCE"
+SIG_T1=$(release_json "$SUB_A" 1 | result_field signature)
+[ -n "$SIG_T1" ] || { echo "FAIL: no signature for T chunk 1"; exit 1; }
+RENT=$(driver ata-lamports "$SOL_RPC_URL" "$ESCROW_T")
+[ "$RENT" != "0" ] || { echo "FAIL: T's ATA is already gone before the last chunk"; exit 1; }
+OWNER_BEFORE=$(driver balance "$SOL_RPC_URL" "$OWNER")
+DONOR_SOL_BEFORE=$(driver sol "$SOL_RPC_URL" "$DONOR")
+driver release "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$ESCROW_T" 1 "$SIG_T1" "$RES_A"
+OWNER_AFTER=$(driver balance "$SOL_RPC_URL" "$OWNER")
+DONOR_SOL_AFTER=$(driver sol "$SOL_RPC_URL" "$DONOR")
+[ "$OWNER_AFTER" = "$((OWNER_BEFORE + CHUNK_PAYOUT))" ] || { echo "FAIL: T chunk 1 payout"; exit 1; }
+read -r RELEASED SETTLED <<<"$(driver state "$SOL_RPC_URL" "$ESCROW_T")"
+[ "$RELEASED" = "$T_CHUNKS" ] && [ "$SETTLED" = "true" ] \
+    || { echo "FAIL: T not terminal after the last chunk: $RELEASED $SETTLED"; exit 1; }
+[ "$(driver ata-lamports "$SOL_RPC_URL" "$ESCROW_T")" = "0" ] \
+    || { echo "FAIL: T's ATA still exists after the last chunk"; exit 1; }
+# The donor paid for this transaction and got the ATA's rent back in it.
+[ "$DONOR_SOL_AFTER" = "$((DONOR_SOL_BEFORE + RENT - RELEASE_TX_FEE))" ] \
+    || { echo "FAIL: rent not returned: $DONOR_SOL_BEFORE -> $DONOR_SOL_AFTER, rent $RENT"; exit 1; }
+
+echo "== act 5: the donor cancels S — the remainder returns at once"
+birth "$OWNER_HEX" 10000 "$CHUNK" "$N_CHUNKS" "$T0" "$NONCE"
 # The authorization is UTF-8 text with newlines (auth.rs): by file, not by arg.
 AUTH_FILE=$(mktemp)
 participant cancel-authorization solana-devnet "$GAME_ID" "$ESCROW_HEX" > "$AUTH_FILE"
@@ -262,30 +368,77 @@ DONOR_AFTER=$(driver balance "$SOL_RPC_URL" "$DONOR")
 read -r RELEASED SETTLED <<<"$(driver state "$SOL_RPC_URL" "$ESCROW")"
 [ "$SETTLED" = "true" ] || { echo "FAIL: not terminal after cancel"; exit 1; }
 
-echo "== act 4: an overdue stream outside the game — refund(), no Settled"
+echo "== act 6: a row of two recipients — one release, two payouts"
+M_NONCE=$((NONCE + 3))
+M_T0=$(date +%s)
+ESCROW_M=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER,$OWNER2" "$K_SHARE,$K_SHARE2" "$K_CHUNK" 1 "$M_T0" "$PERIOD" "$RES_A" "$FEE_BPS" "$FEE_WALLET" "$M_NONCE")
+echo "escrow M=$ESCROW_M"
+birth "$OWNER_HEX,$OWNER2_HEX" "$K_SHARE,$K_SHARE2" "$K_CHUNK" 1 "$M_T0" "$M_NONCE"
+JSON=$(release_json "$SUB_A" 0)
+SIG_M=$(echo "$JSON" | result_field signature)
+[ -n "$SIG_M" ] || { echo "FAIL: no signature for M chunk 0: $JSON"; exit 1; }
+# The multi-recipient row goes into the salt: a wrong encoding derives another
+# address, and the signature would be for an escrow that does not exist.
+[ "$(echo "$JSON" | result_field escrow)" = "$(b58_hex "$ESCROW_M")" ] \
+    || { echo "FAIL: derived escrow mismatch for the two-recipient row"; exit 1; }
+OWNER_BEFORE=$(driver balance "$SOL_RPC_URL" "$OWNER")
+OWNER2_BEFORE=$(driver balance "$SOL_RPC_URL" "$OWNER2")
+FEE_BEFORE=$(driver balance "$SOL_RPC_URL" "$FEE_WALLET")
+DONOR_BEFORE=$(driver balance "$SOL_RPC_URL" "$DONOR")
+driver release "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$ESCROW_M" 0 "$SIG_M" "$RES_A"
+[ "$(driver balance "$SOL_RPC_URL" "$OWNER")" = "$((OWNER_BEFORE + K_PAYOUT))" ] \
+    || { echo "FAIL: share $K_SHARE payout"; exit 1; }
+[ "$(driver balance "$SOL_RPC_URL" "$OWNER2")" = "$((OWNER2_BEFORE + K_PAYOUT2))" ] \
+    || { echo "FAIL: share $K_SHARE2 payout"; exit 1; }
+[ "$(driver balance "$SOL_RPC_URL" "$FEE_WALLET")" = "$((FEE_BEFORE + K_FEE))" ] \
+    || { echo "FAIL: fee of both pieces"; exit 1; }
+[ "$(driver balance "$SOL_RPC_URL" "$DONOR")" = "$((DONOR_BEFORE + K_REMAINDER))" ] \
+    || { echo "FAIL: rounding remainder to the donor"; exit 1; }
+
+echo "== act 7: an overdue stream — refund() beats the signature already issued"
+R_NONCE=$((NONCE + 1))
 R_T0=$(( $(date +%s) - 2000 ))
-R_ESCROW=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" "$R_CHUNK" 1 "$R_T0" "$PERIOD" "$RES_A" "$FEE_BPS" "$FEE_WALLET" $((NONCE + 1)))
-echo "refund escrow=$R_ESCROW"
+R_ESCROW=$(driver create "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$OWNER" 10000 "$R_CHUNK" 1 "$R_T0" "$PERIOD" "$RES_A" "$FEE_BPS" "$FEE_WALLET" "$R_NONCE")
+echo "refund escrow R=$R_ESCROW"
+birth "$OWNER_HEX" 10000 "$R_CHUNK" 1 "$R_T0" "$R_NONCE"
+# A valid release signature, taken and deliberately not executed (§13.3: the
+# canister cannot revoke it — it has nothing to remember it with).
+STALE_SIG=$(release_json "$SUB_A" 0 | result_field signature)
+[ -n "$STALE_SIG" ] || { echo "FAIL: no signature for the overdue chunk"; exit 1; }
 DONOR_BEFORE=$(driver balance "$SOL_RPC_URL" "$DONOR")
 driver refund "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$R_ESCROW"
 DONOR_AFTER=$(driver balance "$SOL_RPC_URL" "$DONOR")
 [ "$DONOR_AFTER" = "$((DONOR_BEFORE + R_CHUNK))" ] || { echo "FAIL: refund"; exit 1; }
+read -r RELEASED SETTLED <<<"$(driver state "$SOL_RPC_URL" "$R_ESCROW")"
+[ "$RELEASED" = "0" ] && [ "$SETTLED" = "true" ] || { echo "FAIL: R not terminal after refund"; exit 1; }
+if driver release "$SOL_RPC_URL" "$SOL_DONOR_KEYPAIR" "$R_ESCROW" 0 "$STALE_SIG" "$RES_A" >/dev/null 2>&1; then
+    echo "FAIL: a signature issued before the refund still released"; exit 1
+fi
+[ "$(driver balance "$SOL_RPC_URL" "$DONOR")" = "$DONOR_AFTER" ] \
+    || { echo "FAIL: the stale signature moved money"; exit 1; }
 
-echo "== the book credits the donor for the released chunks, and only them"
-EXPECTED=$((2 * CHUNK_PAYOUT))
+echo "== the book credits the donor for the released pieces, and only them"
+# S and T gave the owner two chunks each; M gave him his share of one chunk
+# and the second recipient his. cancel and refund go past the splitter.
+EXPECTED=$((BASE_REP + 4 * CHUNK_PAYOUT + K_PAYOUT))
+EXPECTED2=$((BASE_REP2 + K_PAYOUT2))
 REP=""
+REP2=""
 for _ in $(seq 1 90); do
     REP=$(reputation "$(blob_hex "$DONOR_HEX")" "$(blob_hex "$OWNER_HEX")")
-    echo "book: donor $REP/$EXPECTED"
-    [ "$REP" = "$EXPECTED" ] && break
+    REP2=$(reputation "$(blob_hex "$DONOR_HEX")" "$(blob_hex "$OWNER2_HEX")")
+    echo "book: donor $REP/$EXPECTED at the owner, $REP2/$EXPECTED2 at the second recipient"
+    [ "$REP" = "$EXPECTED" ] && [ "$REP2" = "$EXPECTED2" ] && break
     sleep 10
 done
-[ "$REP" = "$EXPECTED" ] || { echo "FAIL: attribution"; exit 1; }
+[ "$REP" = "$EXPECTED" ] && [ "$REP2" = "$EXPECTED2" ] || { echo "FAIL: attribution"; exit 1; }
 
 echo "== cancel and refund left the book unchanged; zero anomalies"
 sleep 30
 REP=$(reputation "$(blob_hex "$DONOR_HEX")" "$(blob_hex "$OWNER_HEX")")
-[ "$REP" = "$EXPECTED" ] || { echo "FAIL: the book moved after cancel/refund: $REP"; exit 1; }
+REP2=$(reputation "$(blob_hex "$DONOR_HEX")" "$(blob_hex "$OWNER2_HEX")")
+[ "$REP" = "$EXPECTED" ] && [ "$REP2" = "$EXPECTED2" ] \
+    || { echo "FAIL: the book moved after cancel/refund: $REP $REP2"; exit 1; }
 ANOMALIES=$(dfx canister call crown-index get_anomaly_count --query | tr -d '(_ )' | sed 's/:nat64//')
 [ "$ANOMALIES" = "0" ] || { echo "FAIL: anomaly count = $ANOMALIES"; exit 1; }
 
